@@ -1,0 +1,12 @@
+[project]
+name = "tv-ctl"
+version = "0.1.0"
+description = "Remote control and QA harness for a rooted LG webOS TV"
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML>=6.0",
+    "websockets>=12.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,11 @@
+name: hbchannel-smoke
+appId: org.webosbrew.hbchannel
+steps:
+  - key: HOME
+    label: return-to-home
+  - wait: 1.0
+    label: settle
+  - key: RIGHT
+    label: move-right-in-grid
+  - key: ENTER
+    label: open-selected-item
