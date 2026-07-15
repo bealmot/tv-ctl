@@ -54,3 +54,10 @@ observe — this skill deliberately does not do pixel-diffing or pass/fail
 assertions; visual review of the sequence *is* the QA check. Compare
 against a prior run's screenshots in the same `qa/runs/` directory if one
 exists, to spot regressions.
+
+Review the individual PNG frames, not a stitched video — an image model
+reads only the first frame of an animated GIF/MP4, so the per-step PNGs are
+the source of truth for automated review. The video is for a *human*: if
+someone wants to watch a run from a phone, point them at
+`tv-ctl serve <run-dir>` (see the `tv-control` skill), which encodes the
+frames into a browser-playable video and serves it over the LAN/tailnet.

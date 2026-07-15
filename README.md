@@ -114,7 +114,35 @@ tv-ctl send-key HOME
 tv-ctl launch org.webosbrew.hbchannel
 tv-ctl screenshot /tmp/tv.png
 tv-ctl qa-run examples/qa/hbchannel-smoke.tv-qa.yaml
+tv-ctl encode qa/runs/20240101T120000        # frames -> run.mp4
+tv-ctl serve qa/runs/20240101T120000         # watch a run in a browser
 ```
+
+## Watching a QA run in a browser
+
+`tv-ctl qa-run` writes one PNG per step — the right format for *automated*
+review (the agent looking at the run reads stills, and an animated GIF/video
+only exposes its first frame to image models anyway). But to *watch* a run
+yourself from a phone, a folder of PNGs is awkward, and an animated GIF pasted
+into a chat client won't animate — those inline renderers decode a single
+frame.
+
+`tv-ctl serve <run-dir>` solves that: it encodes the run's frames into an
+H.264 MP4 (needs `ffmpeg` on `PATH`) and serves a small page — an autoplaying
+video plus the individual frames — over plain HTTP. Run it on the same box
+that runs `tv-ctl` (it's already next to the TV), reach it over your LAN or
+tailnet, and open it in a real browser, where the video actually plays:
+
+```
+tv-ctl serve qa/runs/20240101T120000 --port 8080
+# then, from a browser on the same network: http://<box-ip>:8080/
+```
+
+Over Tailscale the hop is already WireGuard-encrypted, so plain HTTP is fine —
+no self-signed-cert warnings on mobile. Use `--out run.webm` for VP9 instead
+of H.264, `--fps` to change how long each step is held, or `--no-encode` to
+serve whatever media is already in the directory. `tv-ctl encode` does just
+the encode step without serving.
 
 ## Known gotchas
 

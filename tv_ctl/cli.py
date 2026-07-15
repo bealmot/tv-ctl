@@ -1,12 +1,14 @@
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 
-from . import commands, config, fuzz, qa
+from . import commands, config, fuzz, qa, serve as serve_mod, video
 from .cdp import CdpError
 from .luna import LunaError
 from .qa import CartridgeError
+from .video import VideoError
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -75,6 +77,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_fuzz.add_argument("--allow-no-focus", action="store_true", help="Don't flag zero focused elements as an anomaly — for screens with no D-pad content nav at all")
     p_fuzz.add_argument("outfile", nargs="?", default=None, help="Write the JSON report here instead of stdout")
 
+    p_encode = sub.add_parser("encode", help="Encode a QA run's PNG frames into a browser-playable video (needs ffmpeg)")
+    p_encode.add_argument("run_dir", help="A QA run directory of NN-label.png frames")
+    p_encode.add_argument("--fps", type=float, default=1.5, help="Input frame rate; each still is held 1/fps seconds (default: 1.5)")
+    p_encode.add_argument("--out", default="run.mp4", help="Output filename inside run_dir; .webm selects VP9, else H.264 MP4 (default: run.mp4)")
+
+    p_serve = sub.add_parser("serve", help="Serve a QA run directory as a browser page over the LAN/tailnet")
+    p_serve.add_argument("run_dir", help="A QA run directory to serve")
+    p_serve.add_argument("--port", type=int, default=8080, help="Port to listen on (default: 8080)")
+    p_serve.add_argument("--host", default="0.0.0.0", help="Address to bind (default: 0.0.0.0 — all interfaces)")
+    p_serve.add_argument("--fps", type=float, default=1.5, help="Frame rate for the auto-encoded video (default: 1.5)")
+    p_serve.add_argument("--out", default="run.mp4", help="Video filename to encode/serve (default: run.mp4)")
+    p_serve.add_argument("--no-encode", action="store_true", help="Don't auto-encode a video; serve whatever media already exists")
+
     return parser
 
 
@@ -83,6 +98,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
+        # These operate on a local run directory, not the TV — don't require a
+        # config.json just to encode or view a run.
+        if args.command == "encode":
+            path = video.encode_run(args.run_dir, out_name=args.out, fps=args.fps)
+            print(path)
+            return 0
+        elif args.command == "serve":
+            if not args.no_encode and video.ffmpeg_available():
+                out_path = os.path.join(args.run_dir, args.out)
+                if not os.path.exists(out_path):
+                    try:
+                        video.encode_run(args.run_dir, out_name=args.out, fps=args.fps)
+                    except VideoError as e:
+                        print(f"tv-ctl: warning: could not encode video ({e}); serving frames only", file=sys.stderr)
+            serve_mod.serve(args.run_dir, port=args.port, host=args.host)
+            return 0
+
         cfg = config.load_config()
 
         if args.command == "wake":
@@ -168,7 +200,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(json.dumps(result))
         return 0
-    except (LunaError, CartridgeError, CdpError, OSError, KeyError, ValueError) as e:
+    except (LunaError, CartridgeError, CdpError, VideoError, OSError, KeyError, ValueError) as e:
         message = str(e) or f"{type(e).__name__} (no further detail)"
         print(f"tv-ctl: error: {message}", file=sys.stderr)
         return 1
