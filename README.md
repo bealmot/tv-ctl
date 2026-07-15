@@ -144,6 +144,31 @@ of H.264, `--fps` to change how long each step is held, or `--no-encode` to
 serve whatever media is already in the directory. `tv-ctl encode` does just
 the encode step without serving.
 
+### Smooth-motion capture (`screencast`)
+
+`qa-run` frames and `encode` give you a *slideshow* — one still per step. To
+capture **actual motion** (a transition, a focus animation, video playback),
+`tv-ctl screencast` streams the app page's frames over CDP
+(`Page.startScreencast`) at compositor rate and stitches them into a video
+whose timing matches real capture time, not a fixed slideshow rate:
+
+```
+tv-ctl launch com.example.myapp        # get the app on screen first
+tv-ctl screencast nav.mp4 --duration 6 --keys RIGHT,RIGHT,DOWN,ENTER
+```
+
+`--keys` fires those D-pad presses (spaced by `--key-interval`) *while*
+recording, so you capture the navigation as motion; omit it and drive the TV
+yourself during the window instead. The result is a standard H.264 MP4 you can
+hand to `tv-ctl serve` (drop it in a directory and point `serve` at it).
+
+Two things to know: screencast captures only the **web page** in the CDP
+target, not native TV overlays (fine for app QA, not for the system UI); and it
+needs an app actually on screen, since there's no page to record otherwise.
+`--max-width` caps frame size, `--quality` trades JPEG quality for bandwidth,
+and `--keep-frames <dir>` retains the raw JPEGs instead of a temp dir. Needs
+`ffmpeg`.
+
 ## Known gotchas
 
 Rooted webOS is genuinely undocumented territory. Things we hit building

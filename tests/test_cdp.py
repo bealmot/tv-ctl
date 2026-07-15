@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import socket
 import subprocess
@@ -339,6 +340,49 @@ def test_inspect_storage_reports_error_and_keeps_dom_storage_when_listing_hangs(
 
     assert result["localStorage"] == {"theme": "dark"}
     assert "error" in result["indexedDB"]
+
+
+def test_capture_screencast_writes_frames_acks_and_stops(tmp_path):
+    received = {"acks": [], "stopped": False, "start_params": None}
+
+    async def handler(ws):
+        async for raw in ws:
+            msg = json.loads(raw)
+            method = msg.get("method")
+            if method == "Page.startScreencast":
+                received["start_params"] = msg["params"]
+                for i, ts in ((1, 100.0), (2, 100.5)):
+                    await ws.send(json.dumps({
+                        "method": "Page.screencastFrame",
+                        "params": {
+                            "data": base64.b64encode(f"frame{i}".encode()).decode(),
+                            "sessionId": i,
+                            "metadata": {"timestamp": ts},
+                        },
+                    }))
+            elif method == "Page.screencastFrameAck":
+                received["acks"].append(msg["params"]["sessionId"])
+            elif method == "Page.stopScreencast":
+                received["stopped"] = True
+
+    async def run():
+        async with websockets.serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            return await cdp.capture_screencast_async(
+                f"ws://127.0.0.1:{port}", str(tmp_path), duration=0.5, quality=70, max_width=800
+            )
+
+    frames = asyncio.run(run())
+
+    assert [f["timestamp"] for f in frames] == [100.0, 100.5]
+    assert open(frames[0]["path"], "rb").read() == b"frame1"
+    assert open(frames[1]["path"], "rb").read() == b"frame2"
+    assert [p.rsplit("/", 1)[-1] for p in (f["path"] for f in frames)] == ["00001.jpg", "00002.jpg"]
+    assert received["acks"] == [1, 2]  # every frame acked, or the TV would stall
+    assert received["stopped"] is True
+    assert received["start_params"]["format"] == "jpeg"
+    assert received["start_params"]["quality"] == 70
+    assert received["start_params"]["maxWidth"] == 800
 
 
 def test_get_page_target_raises_when_no_page_targets(monkeypatch):

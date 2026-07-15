@@ -23,6 +23,13 @@ class VideoError(Exception):
     pass
 
 
+# When a screencast frame's real gap is unknown (missing metadata timestamp)
+# fall back to this; when the page sat idle for a long time, clamp the still so
+# a recording doesn't open with a multi-second freeze.
+_DEFAULT_FRAME_DUR = 0.1
+_MAX_FRAME_DUR = 2.0
+
+
 # Frames are named "NN-label.png" (see qa.py). Matching on a leading digit
 # keeps a stray hand-dropped PNG in the run dir out of the video.
 _FRAME_GLOB = "[0-9]*.png"
@@ -97,5 +104,80 @@ def encode_run(run_dir: str, out_name: str = "run.mp4", fps: float = 1.5) -> str
         tail = (result.stderr or "").strip().splitlines()
         detail = tail[-1] if tail else "no stderr"
         raise VideoError(f"ffmpeg failed encoding the run video: {detail}")
+
+    return out_path
+
+
+def _frame_durations(frames: list[dict]) -> list[float]:
+    """Per-frame display durations from consecutive capture timestamps. Falls
+    back to a default when a timestamp is missing/non-monotonic, and clamps
+    long idle gaps so a static stretch doesn't become a multi-second freeze."""
+    durations: list[float] = []
+    for i, fr in enumerate(frames):
+        dur = _DEFAULT_FRAME_DUR
+        if i + 1 < len(frames):
+            t0, t1 = fr.get("timestamp"), frames[i + 1].get("timestamp")
+            if t0 is not None and t1 is not None and t1 > t0:
+                dur = min(t1 - t0, _MAX_FRAME_DUR)
+        elif durations:
+            dur = durations[-1]  # last frame: reuse the prior gap
+        durations.append(dur)
+    return durations
+
+
+def encode_timed(frames: list[dict], out_path: str, fps: int = 30) -> str:
+    """Encode captured screencast frames into `out_path`, honoring each frame's
+    real capture timing so motion plays back at true speed rather than as a
+    fixed-rate slideshow. `frames` is what `cdp.capture_screencast_async`
+    returns: `[{"path", "timestamp"}, ...]`.
+
+    Uses ffmpeg's concat demuxer to feed a variable-duration timeline, then
+    resamples to a constant `fps` output — CFR H.264 plays smoothly on the
+    widest set of players (some choke on VFR). Raises VideoError on the usual
+    failures (no ffmpeg, no frames, ffmpeg error).
+    """
+    if not ffmpeg_available():
+        raise VideoError(
+            "ffmpeg not found on PATH — it's required to encode a screencast. "
+            "Re-run with a frames directory kept (--keep-frames) and encode later."
+        )
+    if not frames:
+        raise VideoError("no screencast frames to encode")
+
+    durations = _frame_durations(frames)
+    list_path = os.path.join(os.path.dirname(os.path.abspath(frames[0]["path"])), "frames.txt")
+    lines = []
+    for fr, dur in zip(frames, durations):
+        # Absolute paths + safe=0 below; frame filenames are numeric so no
+        # quote-escaping is needed.
+        lines.append(f"file '{os.path.abspath(fr['path'])}'")
+        lines.append(f"duration {dur:.4f}")
+    # concat demuxer quirk: the final file's duration is ignored unless the
+    # file is listed once more after it.
+    lines.append(f"file '{os.path.abspath(frames[-1]['path'])}'")
+    with open(list_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "concat", "-safe", "0",
+        "-i", list_path,
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-r", str(fps),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+        out_path,
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise VideoError("ffmpeg timed out after 120s encoding the screencast")
+    except FileNotFoundError:
+        raise VideoError("ffmpeg not found on PATH — it's required to encode a screencast")
+
+    if result.returncode != 0:
+        tail = (result.stderr or "").strip().splitlines()
+        detail = tail[-1] if tail else "no stderr"
+        raise VideoError(f"ffmpeg failed encoding the screencast: {detail}")
 
     return out_path

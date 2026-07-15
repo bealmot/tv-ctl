@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime
 
-from . import commands, config, fuzz, qa, serve as serve_mod, video
+from . import commands, config, fuzz, qa, screencast as screencast_mod, serve as serve_mod, video
 from .cdp import CdpError
 from .luna import LunaError
 from .qa import CartridgeError
@@ -76,6 +76,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_fuzz.add_argument("--warmup", type=float, default=3.0, help="Seconds to wait after --start-path navigation before the first keypress (default: 3.0)")
     p_fuzz.add_argument("--allow-no-focus", action="store_true", help="Don't flag zero focused elements as an anomaly — for screens with no D-pad content nav at all")
     p_fuzz.add_argument("outfile", nargs="?", default=None, help="Write the JSON report here instead of stdout")
+
+    p_cast = sub.add_parser("screencast", help="Record smooth motion off the TV's current page via CDP screencast into a video (needs ffmpeg)")
+    p_cast.add_argument("outfile", help="Output video path, e.g. nav.mp4 (.webm not supported here — screencast encodes H.264)")
+    p_cast.add_argument("--duration", type=float, default=5.0, help="Seconds to record (default: 5)")
+    p_cast.add_argument("--keys", default=None, help="Comma-separated D-pad keys to fire during capture, e.g. RIGHT,RIGHT,DOWN,ENTER")
+    p_cast.add_argument("--key-delay", type=float, default=0.5, help="Seconds to wait before the first scripted key (default: 0.5)")
+    p_cast.add_argument("--key-interval", type=float, default=0.6, help="Seconds between scripted keys (default: 0.6)")
+    p_cast.add_argument("--fps", type=int, default=30, help="Constant output frame rate; capture timing is preserved regardless (default: 30)")
+    p_cast.add_argument("--quality", type=int, default=80, help="JPEG quality of captured frames, 0-100 (default: 80)")
+    p_cast.add_argument("--max-width", type=int, default=None, help="Cap captured frame width in px (preserves aspect); default is the page's own size")
+    p_cast.add_argument("--keep-frames", default=None, help="Keep the raw JPEG frames in this directory instead of a temp dir")
 
     p_encode = sub.add_parser("encode", help="Encode a QA run's PNG frames into a browser-playable video (needs ffmpeg)")
     p_encode.add_argument("run_dir", help="A QA run directory of NN-label.png frames")
@@ -176,6 +187,16 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "screenshot":
             outfile = args.outfile or f"/tmp/tv-screenshot-{datetime.now().strftime('%Y%m%dT%H%M%S')}.png"
             path = commands.screenshot(cfg, outfile)
+            print(path)
+            return 0
+        elif args.command == "screencast":
+            keys = [k.strip() for k in args.keys.split(",") if k.strip()] if args.keys else None
+            path = screencast_mod.record_to_video(
+                cfg, args.outfile,
+                duration=args.duration, keys=keys, frames_dir=args.keep_frames, fps=args.fps,
+                key_delay=args.key_delay, key_interval=args.key_interval,
+                quality=args.quality, max_width=args.max_width,
+            )
             print(path)
             return 0
         elif args.command == "qa-run":
