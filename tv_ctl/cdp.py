@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import contextlib
 import json
+import os
 import re
 import socket
 import subprocess
@@ -151,6 +153,79 @@ async def capture_network_async(ws_url: str, duration: float, block_pattern: str
                     await send("Fetch.continueRequest", {"requestId": fetch_request_id})
 
     return list(requests.values())
+
+
+async def capture_screencast_async(
+    ws_url: str,
+    out_dir: str,
+    duration: float,
+    quality: int = 80,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    every_nth: int = 1,
+) -> list[dict]:
+    """Stream `Page.screencastFrame` JPEGs off the current page for `duration`
+    seconds, writing each to `out_dir` as NNNNN.jpg. Returns
+    `[{"path", "timestamp"}, ...]` in capture order.
+
+    This captures the *page's* compositor output at frame rate — smooth motion,
+    unlike the one-shot luna snapshots — but only the web content of the CDP
+    target, not native TV overlays. Each frame MUST be acked or the TV's Chrome
+    stops sending after a couple of frames (a hard requirement of the protocol,
+    not a nicety); we ack before writing so throughput isn't gated on disk.
+    Command replies to enable/start/ack aren't correlated — anything that isn't
+    a screencastFrame is simply ignored, the same pattern capture_network uses.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    frames: list[dict] = []
+
+    async with websockets.connect(ws_url, max_size=20_000_000) as ws:
+        next_id = 1
+
+        async def send(method, params=None):
+            nonlocal next_id
+            msg_id = next_id
+            next_id += 1
+            await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+            return msg_id
+
+        await send("Page.enable")
+        start_params: dict = {"format": "jpeg", "quality": quality, "everyNthFrame": max(1, every_nth)}
+        if max_width:
+            start_params["maxWidth"] = max_width
+        if max_height:
+            start_params["maxHeight"] = max_height
+        await send("Page.startScreencast", start_params)
+
+        deadline = time.monotonic() + duration
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+
+                msg = json.loads(raw)
+                if msg.get("method") != "Page.screencastFrame":
+                    continue
+
+                params = msg["params"]
+                # Ack first — the TV throttles hard if acks lag.
+                await send("Page.screencastFrameAck", {"sessionId": params.get("sessionId")})
+
+                idx = len(frames) + 1
+                path = os.path.join(out_dir, f"{idx:05d}.jpg")
+                with open(path, "wb") as f:
+                    f.write(base64.b64decode(params["data"]))
+                frames.append({"path": path, "timestamp": params.get("metadata", {}).get("timestamp")})
+        finally:
+            with contextlib.suppress(Exception):
+                await send("Page.stopScreencast")
+
+    return frames
 
 
 def _describe_remote_object(obj: dict):

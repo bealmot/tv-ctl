@@ -114,7 +114,60 @@ tv-ctl send-key HOME
 tv-ctl launch org.webosbrew.hbchannel
 tv-ctl screenshot /tmp/tv.png
 tv-ctl qa-run examples/qa/hbchannel-smoke.tv-qa.yaml
+tv-ctl encode qa/runs/20240101T120000        # frames -> run.mp4
+tv-ctl serve qa/runs/20240101T120000         # watch a run in a browser
 ```
+
+## Watching a QA run in a browser
+
+`tv-ctl qa-run` writes one PNG per step — the right format for *automated*
+review (the agent looking at the run reads stills, and an animated GIF/video
+only exposes its first frame to image models anyway). But to *watch* a run
+yourself from a phone, a folder of PNGs is awkward, and an animated GIF pasted
+into a chat client won't animate — those inline renderers decode a single
+frame.
+
+`tv-ctl serve <run-dir>` solves that: it encodes the run's frames into an
+H.264 MP4 (needs `ffmpeg` on `PATH`) and serves a small page — an autoplaying
+video plus the individual frames — over plain HTTP. Run it on the same box
+that runs `tv-ctl` (it's already next to the TV), reach it over your LAN or
+tailnet, and open it in a real browser, where the video actually plays:
+
+```
+tv-ctl serve qa/runs/20240101T120000 --port 8080
+# then, from a browser on the same network: http://<box-ip>:8080/
+```
+
+Over Tailscale the hop is already WireGuard-encrypted, so plain HTTP is fine —
+no self-signed-cert warnings on mobile. Use `--out run.webm` for VP9 instead
+of H.264, `--fps` to change how long each step is held, or `--no-encode` to
+serve whatever media is already in the directory. `tv-ctl encode` does just
+the encode step without serving.
+
+### Smooth-motion capture (`screencast`)
+
+`qa-run` frames and `encode` give you a *slideshow* — one still per step. To
+capture **actual motion** (a transition, a focus animation, video playback),
+`tv-ctl screencast` streams the app page's frames over CDP
+(`Page.startScreencast`) at compositor rate and stitches them into a video
+whose timing matches real capture time, not a fixed slideshow rate:
+
+```
+tv-ctl launch com.example.myapp        # get the app on screen first
+tv-ctl screencast nav.mp4 --duration 6 --keys RIGHT,RIGHT,DOWN,ENTER
+```
+
+`--keys` fires those D-pad presses (spaced by `--key-interval`) *while*
+recording, so you capture the navigation as motion; omit it and drive the TV
+yourself during the window instead. The result is a standard H.264 MP4 you can
+hand to `tv-ctl serve` (drop it in a directory and point `serve` at it).
+
+Two things to know: screencast captures only the **web page** in the CDP
+target, not native TV overlays (fine for app QA, not for the system UI); and it
+needs an app actually on screen, since there's no page to record otherwise.
+`--max-width` caps frame size, `--quality` trades JPEG quality for bandwidth,
+and `--keep-frames <dir>` retains the raw JPEGs instead of a temp dir. Needs
+`ffmpeg`.
 
 ## Known gotchas
 
