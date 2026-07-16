@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_fuzz.add_argument("outfile", nargs="?", default=None, help="Write the JSON report here instead of stdout")
 
     p_cast = sub.add_parser("screencast", help="Record smooth motion off the TV's current page via CDP screencast into a video (needs ffmpeg)")
-    p_cast.add_argument("outfile", help="Output video path, e.g. nav.mp4 (.webm not supported here — screencast encodes H.264)")
+    p_cast.add_argument("outfile", help="Output path: .mp4/.webm (ffmpeg) or .webp (animated, Pillow) — e.g. nav.mp4 or nav.webp")
     p_cast.add_argument("--duration", type=float, default=5.0, help="Seconds to record (default: 5)")
     p_cast.add_argument("--keys", default=None, help="Comma-separated D-pad keys to fire during capture, e.g. RIGHT,RIGHT,DOWN,ENTER")
     p_cast.add_argument("--key-delay", type=float, default=0.5, help="Seconds to wait before the first scripted key (default: 0.5)")
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_encode = sub.add_parser("encode", help="Encode a QA run's PNG frames into a browser-playable video (needs ffmpeg)")
     p_encode.add_argument("run_dir", help="A QA run directory of NN-label.png frames")
     p_encode.add_argument("--fps", type=float, default=1.5, help="Input frame rate; each still is held 1/fps seconds (default: 1.5)")
-    p_encode.add_argument("--out", default="run.mp4", help="Output filename inside run_dir; .webm selects VP9, else H.264 MP4 (default: run.mp4)")
+    p_encode.add_argument("--out", default="run.mp4", help="Output filename inside run_dir; .webm=VP9, .webp=animated WebP (Pillow, plays inline on the desktop app), else H.264 MP4 (default: run.mp4)")
 
     p_serve = sub.add_parser("serve", help="Serve a QA run directory as a browser page over the LAN/tailnet")
     p_serve.add_argument("run_dir", help="A QA run directory to serve")

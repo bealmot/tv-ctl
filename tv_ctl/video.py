@@ -8,9 +8,16 @@ it stitches those same frames into a single H.264 MP4 (or VP9 WebM) that a
 real browser plays inline — the delivery path that actually animates, unlike
 an inline image in a chat client. Pair it with `tv_ctl.serve`.
 
-ffmpeg does the encode; we shell out to it the same way the rest of the tool
-shells out to ssh/scp. It's an optional, runtime-only dependency — nothing
+ffmpeg does the video encode; we shell out to it the same way the rest of the
+tool shells out to ssh/scp. It's an optional, runtime-only dependency — nothing
 here imports it, and the QA path never needs it.
+
+An output name ending in `.webp` instead produces an animated WebP via Pillow
+(no ffmpeg). That's the format for a *human* glance: an animated WebP dropped
+inline in a Claude Code chat plays on the desktop app (click to animate) where
+a folder of PNGs or an MP4 can't be viewed at all — while mobile/CLI still show
+a single frame, so `serve` remains the answer there. Pillow is likewise
+optional and imported only when a `.webp` output is asked for.
 """
 
 import glob
@@ -39,6 +46,43 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
+def pillow_available() -> bool:
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _encode_webp(paths: list[str], durations_ms: list[int], out_path: str) -> str:
+    """Assemble `paths` into an animated WebP at `out_path`, each frame shown
+    for its matching entry in `durations_ms`. Pillow only (no ffmpeg), imported
+    lazily so it's a soft dependency."""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise VideoError(
+            "Pillow is required to encode animated WebP — install it with "
+            "'pip install Pillow' (or 'pip install tv-ctl[webp]')."
+        )
+
+    imgs = [Image.open(p).convert("RGB") for p in paths]
+    try:
+        imgs[0].save(
+            out_path,
+            format="WEBP",
+            save_all=True,
+            append_images=imgs[1:],
+            duration=durations_ms,
+            loop=0,      # loop forever
+            method=4,    # balance encode time vs size
+        )
+    finally:
+        for im in imgs:
+            im.close()
+    return out_path
+
+
 def frame_paths(run_dir: str) -> list[str]:
     """The run's frames in step order. Lexical sort is correct because the
     zero-padded NN prefix sorts the same as numeric step order."""
@@ -61,23 +105,27 @@ def encode_run(run_dir: str, out_name: str = "run.mp4", fps: float = 1.5) -> str
 
     `fps` is the *input* frame rate — each still is held for 1/fps seconds — so
     a QA run reads as a slideshow, not a blur. `.webm` in out_name selects VP9,
-    anything else H.264 MP4.
+    `.webp` an animated WebP (Pillow, no ffmpeg), anything else H.264 MP4.
 
-    Raises VideoError if ffmpeg is missing, there are no frames, or ffmpeg
-    fails — callers can catch it and fall back to serving the raw frames.
+    Raises VideoError if there are no frames, the required encoder is missing,
+    or the encode fails — callers can catch it and fall back to the raw frames.
     """
-    if not ffmpeg_available():
-        raise VideoError(
-            "ffmpeg not found on PATH — it's required to encode a run video. "
-            "Install ffmpeg, or just view the PNG frames directly."
-        )
-
     frames = frame_paths(run_dir)
     if not frames:
         raise VideoError(f"no {_FRAME_GLOB} frames found in {run_dir}")
 
     out_path = os.path.join(run_dir, out_name)
     ext = os.path.splitext(out_name)[1].lower()
+
+    if ext == ".webp":
+        frame_ms = max(1, round(1000.0 / fps))
+        return _encode_webp(frames, [frame_ms] * len(frames), out_path)
+
+    if not ffmpeg_available():
+        raise VideoError(
+            "ffmpeg not found on PATH — it's required to encode a run video. "
+            "Install ffmpeg, use --out run.webp (Pillow), or view the PNG frames directly."
+        )
 
     cmd = [
         "ffmpeg", "-y",
@@ -131,18 +179,23 @@ def encode_timed(frames: list[dict], out_path: str, fps: int = 30) -> str:
     fixed-rate slideshow. `frames` is what `cdp.capture_screencast_async`
     returns: `[{"path", "timestamp"}, ...]`.
 
-    Uses ffmpeg's concat demuxer to feed a variable-duration timeline, then
-    resamples to a constant `fps` output — CFR H.264 plays smoothly on the
-    widest set of players (some choke on VFR). Raises VideoError on the usual
-    failures (no ffmpeg, no frames, ffmpeg error).
+    An `.webp` out_path produces an animated WebP (Pillow) that honors the same
+    per-frame timing; anything else is CFR H.264 MP4 via ffmpeg's concat demuxer
+    (resampled to a constant `fps` — some players choke on VFR). Raises
+    VideoError on the usual failures (no frames, missing encoder, encode error).
     """
-    if not ffmpeg_available():
-        raise VideoError(
-            "ffmpeg not found on PATH — it's required to encode a screencast. "
-            "Re-run with a frames directory kept (--keep-frames) and encode later."
-        )
     if not frames:
         raise VideoError("no screencast frames to encode")
+
+    if os.path.splitext(out_path)[1].lower() == ".webp":
+        durations_ms = [max(1, round(d * 1000)) for d in _frame_durations(frames)]
+        return _encode_webp([fr["path"] for fr in frames], durations_ms, out_path)
+
+    if not ffmpeg_available():
+        raise VideoError(
+            "ffmpeg not found on PATH — it's required to encode a screencast to video. "
+            "Re-run with --keep-frames and encode later, or use a .webp output (Pillow)."
+        )
 
     durations = _frame_durations(frames)
     list_path = os.path.join(os.path.dirname(os.path.abspath(frames[0]["path"])), "frames.txt")

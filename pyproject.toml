@@ -8,5 +8,12 @@ dependencies = [
     "websockets>=12.0",
 ]
 
+[project.optional-dependencies]
+# Animated-WebP output for `encode`/`screencast` (a human-facing motion
+# artifact that plays inline in the desktop Claude Code app). Optional: only
+# needed when a `.webp` output is requested. Video output uses system ffmpeg,
+# which isn't a pip dependency at all.
+webp = ["Pillow>=9.1"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

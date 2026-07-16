@@ -28,6 +28,7 @@ _CONTENT_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
     ".gif": "image/gif",
+    ".webp": "image/webp",
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -68,19 +69,19 @@ def parse_range(header: str, size: int) -> tuple[int, int]:
 
 
 def _media_names(run_dir: str) -> tuple[list[str], list[str], list[str]]:
-    """Return (videos, gifs, frame_pngs) basenames present in the run dir."""
+    """Return (videos, anims, frame_pngs) basenames present in the run dir.
+    `anims` are animated single-image files (GIF/WebP) served via <img>."""
     entries = sorted(os.listdir(run_dir))
     videos = [e for e in entries if e.lower().endswith((".mp4", ".webm"))]
-    gifs = [e for e in entries if e.lower().endswith(".gif")]
-    frames = [f for f in video.frame_paths(run_dir)]
-    frames = [os.path.basename(f) for f in frames]
-    return videos, gifs, frames
+    anims = [e for e in entries if e.lower().endswith((".gif", ".webp"))]
+    frames = [os.path.basename(f) for f in video.frame_paths(run_dir)]
+    return videos, anims, frames
 
 
 def render_index(run_dir: str) -> bytes:
     """Build the run's HTML page: an autoplaying hero (video preferred, else
-    animated GIF) plus the individual frames as a gallery."""
-    videos, gifs, frames = _media_names(run_dir)
+    animated GIF/WebP) plus the individual frames as a gallery."""
+    videos, anims, frames = _media_names(run_dir)
     title = html.escape(os.path.basename(os.path.normpath(run_dir)) or "run")
 
     if videos:
@@ -93,15 +94,16 @@ def render_index(run_dir: str) -> bytes:
             f"<h2>Run</h2><video class=hero autoplay loop muted playsinline controls>"
             f"{sources}</video>"
         )
-    elif gifs:
-        hero = "".join(
-            f'<h2>Run</h2><img class=hero src="{html.escape(g)}" alt="animated run">'
-            for g in gifs[:1]
+    elif anims:
+        # An animated GIF/WebP served as <img> animates in any browser — and
+        # needs no Range support, unlike <video>.
+        hero = (
+            f'<h2>Run</h2><img class=hero src="{html.escape(anims[0])}" alt="animated run">'
         )
     else:
         hero = (
-            "<p class=note>No video or GIF in this run yet — showing frames only. "
-            "Run <code>tv-ctl encode</code> (needs ffmpeg) to add a playable video.</p>"
+            "<p class=note>No video or animated image in this run yet — showing frames only. "
+            "Run <code>tv-ctl encode</code> to add a playable video or an animated <code>.webp</code>.</p>"
         )
 
     thumbs = "".join(

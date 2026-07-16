@@ -32,6 +32,7 @@ def test_parse_range_rejects_bad_or_unsatisfiable(header):
 def test_content_type_known_and_unknown():
     assert serve.content_type("/x/run.mp4") == "video/mp4"
     assert serve.content_type("run.webm") == "video/webm"
+    assert serve.content_type("run.webp") == "image/webp"
     assert serve.content_type("01-step.png") == "image/png"
     assert serve.content_type("mystery.bin") == "application/octet-stream"
 
@@ -56,6 +57,23 @@ def test_render_index_falls_back_to_gif_then_note(tmp_path):
     (tmp_path / "run.gif").write_bytes(b"GIF89a")
     body2 = serve.render_index(str(tmp_path)).decode()
     assert 'src="run.gif"' in body2
+
+
+def test_render_index_serves_webp_as_img_hero(tmp_path):
+    (tmp_path / "01-a.png").write_bytes(b"\x89PNG")
+    (tmp_path / "run.webp").write_bytes(b"RIFF....WEBP")
+    body = serve.render_index(str(tmp_path)).decode()
+    # animated webp is an <img> hero (no <video>, so no Range needed)
+    assert "<video" not in body
+    assert '<img class=hero src="run.webp"' in body
+
+
+def test_render_index_prefers_video_over_webp(tmp_path):
+    (tmp_path / "run.webp").write_bytes(b"RIFF....WEBP")
+    (tmp_path / "run.mp4").write_bytes(b"\x00\x00")
+    body = serve.render_index(str(tmp_path)).decode()
+    assert "<video" in body
+    assert "run.webp" not in body  # video wins the hero slot
 
 
 @pytest.fixture
