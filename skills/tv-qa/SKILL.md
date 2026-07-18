@@ -57,11 +57,32 @@ exists, to spot regressions.
 
 Review the individual PNG frames, not a stitched video/animation — an image
 model reads only the first frame of an animated GIF/WebP/MP4, so the per-step
-PNGs are the source of truth for automated review. Animations are for a
-*human* who asks to see the run:
+PNGs are the source of truth for automated review.
 
-- **Desktop** — `tv-ctl encode <run-dir> --out run.webp` writes an animated
-  WebP; sent inline it plays in the desktop Claude Code app (click to animate).
-- **Mobile** — inline animations show only one frame there, so point them at
-  `tv-ctl serve <run-dir>` (see the `tv-control` skill) and open it in a
-  browser over the LAN/tailnet.
+To hand a *human* the whole run as one artifact, `tv-ctl encode <run-dir>
+--out run.webp` (or `.mp4`) stitches the frames together, and `tv-ctl serve
+<run-dir>` hosts them in a browser — see "Producing evidence" in the
+`tv-control` skill for which to use where (inline `.webp` on desktop, `serve`
+on mobile).
+
+## When a step sequence isn't enough — motion evidence
+
+A cartridge captures *discrete states*: one frame after each key, once the
+screen has settled. That's the wrong tool when the thing under test is the
+motion *between* states — a focus animation, a carousel fling, a page
+transition, a splash-to-content handoff, a trailer starting to play. A row of
+settled stills can't show whether the transition was smooth, janky, or skipped.
+
+For those, capture a **screencast** instead of (or alongside) the cartridge:
+
+```
+tv-ctl launch <appId>
+tv-ctl screencast qa/runs/<ts>/nav.mp4 --keys RIGHT,RIGHT,DOWN,ENTER --keep-frames qa/runs/<ts>/cast
+```
+
+`--keep-frames` drops every captured frame into `cast/` — review *those*, the
+same way you review cartridge PNGs (the encoded clip is only for a human, since
+vision reads one frame of it). The dense frame stream is the evidence that a
+transition actually played and played cleanly. See the `tv-control` skill's
+"Producing evidence" section for the full picture. Gitignore the run dir as
+usual.
