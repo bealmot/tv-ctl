@@ -142,7 +142,28 @@ Over Tailscale the hop is already WireGuard-encrypted, so plain HTTP is fine —
 no self-signed-cert warnings on mobile. Use `--out run.webm` for VP9 instead
 of H.264, `--fps` to change how long each step is held, or `--no-encode` to
 serve whatever media is already in the directory. `tv-ctl encode` does just
-the encode step without serving.
+the encode step without serving. `serve` will host a `.webp` or `.gif` too (as
+an animated `<img>`), not only video.
+
+### Inline animated WebP — for a quick desktop glance
+
+Sometimes you just want a fast visual check without standing up a server. An
+animated **WebP** covers that: `tv-ctl encode <run-dir> --out run.webp` (or
+`tv-ctl screencast out.webp`) writes a single animated file with no ffmpeg
+needed — just Pillow (`pip install 'tv-ctl[webp]'`).
+
+The catch is where it animates. In a Claude Code chat, an inline animated
+WebP/GIF **plays on the desktop app** (click it) but shows a single frame on
+mobile and in the CLI — those renderers decode one frame, same as the vision
+model. So in practice:
+
+- **On a desktop/laptop** — ask for an inline `.webp` and click to play it. No
+  server, no browser tab.
+- **On mobile** — ask for a hosted run instead (`tv-ctl serve`) and open it in
+  the browser, where the MP4 *or* the WebP animates.
+
+Either way this is a *human* artifact. Automated review still reads the PNG
+frames, since an image model only ever sees the first frame of an animation.
 
 ### Smooth-motion capture (`screencast`)
 
@@ -160,7 +181,9 @@ tv-ctl screencast nav.mp4 --duration 6 --keys RIGHT,RIGHT,DOWN,ENTER
 `--keys` fires those D-pad presses (spaced by `--key-interval`) *while*
 recording, so you capture the navigation as motion; omit it and drive the TV
 yourself during the window instead. The result is a standard H.264 MP4 you can
-hand to `tv-ctl serve` (drop it in a directory and point `serve` at it).
+hand to `tv-ctl serve` (drop it in a directory and point `serve` at it) — or
+pass `nav.webp` as the output for an animated WebP to glance at inline on the
+desktop app instead. Either way capture timing is preserved.
 
 Two things to know: screencast captures only the **web page** in the CDP
 target, not native TV overlays (fine for app QA, not for the system UI); and it
