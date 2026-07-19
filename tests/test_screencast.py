@@ -1,4 +1,5 @@
 import contextlib
+import json
 import threading
 from unittest.mock import patch
 
@@ -7,6 +8,31 @@ import pytest
 from tv_ctl import screencast
 from tv_ctl.config import Config
 from tv_ctl.video import VideoError
+
+
+def test_write_timings_records_elapsed_ms(tmp_path):
+    frames = [
+        {"path": str(tmp_path / "00001.jpg"), "timestamp": 1000.0},
+        {"path": str(tmp_path / "00002.jpg"), "timestamp": 1000.25},   # +250ms
+        {"path": str(tmp_path / "00003.jpg"), "timestamp": 1001.6},    # +1600ms
+    ]
+    path = screencast._write_timings(str(tmp_path), frames)
+    manifest = json.loads(open(path).read())
+
+    assert manifest["count"] == 3
+    assert manifest["span_ms"] == 1600  # first-to-last, the stopwatch total
+    assert [f["file"] for f in manifest["frames"]] == ["00001.jpg", "00002.jpg", "00003.jpg"]
+    assert [f["elapsed_ms"] for f in manifest["frames"]] == [0, 250, 1600]
+
+
+def test_write_timings_tolerates_missing_timestamps(tmp_path):
+    frames = [
+        {"path": str(tmp_path / "00001.jpg"), "timestamp": None},
+        {"path": str(tmp_path / "00002.jpg"), "timestamp": None},
+    ]
+    manifest = json.loads(open(screencast._write_timings(str(tmp_path), frames)).read())
+    assert manifest["span_ms"] is None
+    assert all(f["elapsed_ms"] is None for f in manifest["frames"])
 
 
 @pytest.fixture
@@ -51,8 +77,11 @@ def _fake_tunnel(*a, **k):
     yield 12345
 
 
-def test_record_returns_frames_and_drives_keys(cfg):
-    captured_frames = [{"path": "/x/00001.jpg", "timestamp": 1.0}]
+def test_record_returns_frames_drives_keys_and_writes_timings(cfg, tmp_path):
+    captured_frames = [
+        {"path": str(tmp_path / "00001.jpg"), "timestamp": 5.0},
+        {"path": str(tmp_path / "00002.jpg"), "timestamp": 5.3},
+    ]
     sent = []
 
     async def fake_capture(ws_url, out_dir, duration, **kwargs):
@@ -63,10 +92,13 @@ def test_record_returns_frames_and_drives_keys(cfg):
          patch("tv_ctl.cdp._target_ws_url", return_value="ws://127.0.0.1:12345/devtools/page/1"), \
          patch("tv_ctl.cdp.capture_screencast_async", side_effect=fake_capture), \
          patch("tv_ctl.commands.send_key", side_effect=lambda c, k: sent.append(k)):
-        frames = screencast.record(cfg, "/tmp/out", duration=0.2, keys=["RIGHT", "ENTER"], key_delay=0, key_interval=0)
+        frames = screencast.record(cfg, str(tmp_path), duration=0.2, keys=["RIGHT", "ENTER"], key_delay=0, key_interval=0)
 
     assert frames == captured_frames
     assert sent == ["RIGHT", "ENTER"]
+    # a timing manifest is written alongside the frames
+    manifest = json.loads((tmp_path / screencast.TIMINGS_FILENAME).read_text())
+    assert manifest["span_ms"] == 300
 
 
 def test_record_to_video_encodes_and_cleans_temp_frames(cfg, tmp_path):

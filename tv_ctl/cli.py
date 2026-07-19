@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_cast.add_argument("--fps", type=int, default=30, help="Constant output frame rate; capture timing is preserved regardless (default: 30)")
     p_cast.add_argument("--quality", type=int, default=80, help="JPEG quality of captured frames, 0-100 (default: 80)")
     p_cast.add_argument("--max-width", type=int, default=None, help="Cap captured frame width in px (preserves aspect); default is the page's own size")
-    p_cast.add_argument("--keep-frames", default=None, help="Keep the raw JPEG frames in this directory instead of a temp dir")
+    p_cast.add_argument("--keep-frames", default=None, help="Keep the raw JPEG frames in this directory (plus a frames.json timing manifest) instead of a temp dir")
 
     p_encode = sub.add_parser("encode", help="Encode a QA run's PNG frames into a browser-playable video (needs ffmpeg)")
     p_encode.add_argument("run_dir", help="A QA run directory of NN-label.png frames")
