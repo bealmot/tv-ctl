@@ -67,22 +67,30 @@ on mobile).
 
 ## When a step sequence isn't enough — motion evidence
 
-A cartridge captures *discrete states*: one frame after each key, once the
-screen has settled. That's the wrong tool when the thing under test is the
-motion *between* states — a focus animation, a carousel fling, a page
-transition, a splash-to-content handoff, a trailer starting to play. A row of
-settled stills can't show whether the transition was smooth, janky, or skipped.
+A cartridge captures *discrete, settled states* — one frame per step, after the
+screen stops moving — plus its `assert` checks. Keep it: that's your baseline
+for state correctness. But settled stills are blind to anything that lives
+*between* or *over* those states, and for that you **add** a `screencast`
+alongside the run — not in place of it. It answers questions the cartridge
+structurally can't:
 
-For those, capture a **screencast** instead of (or alongside) the cartridge:
+- **Did an async transition complete?** A spinner clears, a skeleton fills, lazy
+  rows stream in, a splash hands off to content — or it hangs halfway. (These are
+  structural transitions, not just design animations.)
+- **How long did it take?** Time from keypress to content, how long an animation
+  or scroll runs, whether a load finishes within budget — motion as a stopwatch.
+- **Did the motion look right?** Smooth vs janky vs skipped; focus that glides
+  vs teleports.
 
 ```
 tv-ctl launch <appId>
 tv-ctl screencast qa/runs/<ts>/nav.mp4 --keys RIGHT,RIGHT,DOWN,ENTER --keep-frames qa/runs/<ts>/cast
 ```
 
-`--keep-frames` drops every captured frame into `cast/` — review *those*, the
-same way you review cartridge PNGs (the encoded clip is only for a human, since
-vision reads one frame of it). The dense frame stream is the evidence that a
-transition actually played and played cleanly. See the `tv-control` skill's
-"Producing evidence" section for the full picture. Gitignore the run dir as
-usual.
+`--keep-frames` drops every captured frame into `cast/` plus a `frames.json`
+with each frame's `elapsed_ms`. Review the frames the way you review cartridge
+PNGs (the encoded clip is for a human — vision reads one frame of it); use
+`frames.json` as the stopwatch — `elapsed_ms` at the frame where content lands
+minus at the frame where you triggered it is the measured latency. See the
+`tv-control` skill's "Producing evidence" section for the full picture.
+Gitignore the run dir as usual.

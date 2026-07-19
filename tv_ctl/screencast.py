@@ -14,6 +14,7 @@ of cdp.py, which keeps no dependency on commands).
 """
 
 import asyncio
+import json
 import os
 import shutil
 import tempfile
@@ -21,6 +22,29 @@ import threading
 
 from . import cdp, commands, video
 from .config import Config
+
+TIMINGS_FILENAME = "frames.json"
+
+
+def _write_timings(out_dir: str, frames: list[dict]) -> str:
+    """Persist a per-frame timing manifest next to the JPEGs so the capture can
+    be used as a stopwatch, not just watched. Each entry carries the frame's
+    CDP capture timestamp and `elapsed_ms` from the first frame — the agent
+    finds the frame where a thing starts and where it lands and subtracts.
+    Written for every capture; it's only durable when `--keep-frames` keeps the
+    directory. Returns the manifest path."""
+    base = next((f.get("timestamp") for f in frames if f.get("timestamp") is not None), None)
+    entries = []
+    for i, f in enumerate(frames):
+        t = f.get("timestamp")
+        elapsed = round((t - base) * 1000) if (t is not None and base is not None) else None
+        entries.append({"i": i, "file": os.path.basename(f["path"]), "t": t, "elapsed_ms": elapsed})
+    span = entries[-1]["elapsed_ms"] if entries and entries[-1]["elapsed_ms"] is not None else None
+    manifest = {"count": len(entries), "span_ms": span, "frames": entries}
+    path = os.path.join(out_dir, TIMINGS_FILENAME)
+    with open(path, "w") as fh:
+        json.dump(manifest, fh, indent=2)
+    return path
 
 
 def _drive_keys(cfg: Config, keys: list[str], delay: float, interval: float, stop: threading.Event) -> None:
@@ -85,6 +109,8 @@ def record(
             if driver is not None:
                 driver.join(timeout=2.0)
 
+    if frames:
+        _write_timings(out_dir, frames)
     return frames
 
 

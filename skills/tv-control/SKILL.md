@@ -45,24 +45,40 @@ missing, create it with `{"host": "<tv-ip>", "port": 22, "ssh_key": "~/.ssh/tv_w
 
 ## Producing evidence (beyond a single snapshot)
 
-A `screenshot` proves a *state*. Some things you need to prove are *behaviors* —
-a transition plays, focus glides between cards, a row scrolls with momentum, a
-splash finishes loading, a trailer actually starts playing. One frame can't show
-those. Reach for heavier evidence as the claim demands it:
+Snapshots and motion clips prove different things, and they're **complementary —
+motion *adds* to snapshots, it never replaces them.**
 
-1. **Snapshot** — `screenshot`. One PNG, one moment. The default.
-2. **Snapshot sequence** — `qa-run` (see the `tv-qa` skill). One PNG per step —
-   good for discrete before/after states along a scripted path.
-3. **Motion clip** — `screencast`. Continuous frames at compositor rate; the
-   only way to capture something transient or animated.
+- **State correctness → snapshot** (`screenshot`, or a `qa-run` sequence of them)
+  **plus the cartridge's `assert` health probe.** Is the screen right *now*:
+  layout, focus target, text, no console error. A settled PNG is the sharpest,
+  cheapest, most reliable tool for this — it waits for the screen to settle, so
+  it's crisp and unambiguous. This stays the baseline; don't drop it.
+- **Behavior over time → motion clip** (`screencast`). Continuous frames at
+  compositor rate, for the questions a settled still literally cannot answer.
+  Add it *alongside* snapshots when the claim is about time or motion, not a
+  resting state. It's heavier to capture and review, so reach for it when the
+  question demands it, not by default.
 
-**Reviewing it as an agent:** always read the individual PNG/JPEG *frames*, never
-the encoded clip — an image model sees only the first frame of an animated
-GIF/WebP/MP4. So when the behavior is motion, run
-`screencast … --keep-frames <dir>` and look at the frames it drops there. That
-dense frame dump *is* the evidence you reason over — a mid-transition frame, a
-dropped frame, a stutter shows up across them where one-shot-per-step would miss
-it. The encoded `.mp4`/`.webp` is the *human's* copy, not yours.
+What a motion clip is for — and it's broader than design polish:
+
+- **Async / structural state** — a spinner appears then clears, a skeleton fills
+  in, lazy-loaded rows stream in, a splash hands off to content. Did it finish,
+  or hang halfway? These are structural transitions, not animations.
+- **Timing / latency (a stopwatch)** — how long from keypress to content
+  appearing, how long an animation or scroll actually runs, whether a load
+  completes within budget. `--keep-frames <dir>` writes a `frames.json` next to
+  the JPEGs with each frame's `elapsed_ms` (and a top-level `span_ms`); find the
+  frame where the thing starts and the frame where it lands and subtract their
+  `elapsed_ms` — that's your measured duration, in milliseconds.
+- **Motion quality** — a transition that's smooth vs janky vs skipped, focus
+  that glides vs teleports.
+
+**Reviewing it as an agent:** read the individual PNG/JPEG *frames* (and
+`frames.json`), never the encoded clip — an image model sees only the first
+frame of an animated GIF/WebP/MP4. The dense frame stream is what shows a
+mid-transition glitch, a dropped frame, or exactly *when* content appeared;
+`frames.json` turns that "when" into milliseconds. The encoded `.mp4`/`.webp` is
+the *human's* copy, not yours.
 
 **Showing it to a human (when they ask to see it):**
 - **Desktop** — send the `.webp` inline; it animates on click in the desktop app.
