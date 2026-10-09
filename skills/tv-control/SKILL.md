@@ -53,7 +53,8 @@ motion *adds* to snapshots, it never replaces them.**
   layout, focus target, text, no console error. A settled PNG is the sharpest,
   cheapest, most reliable tool for this — it waits for the screen to settle, so
   it's crisp and unambiguous. This stays the baseline; don't drop it.
-- **Behavior over time → motion clip** (`screencast`). Continuous frames at
+- **Behavior over time → motion clip** (`screencast`, or a `screencast` step
+  inside a `qa-run` cartridge — see the `tv-qa` skill). Continuous frames at
   compositor rate, for the questions a settled still literally cannot answer.
   Add it *alongside* snapshots when the claim is about time or motion, not a
   resting state. It's heavier to capture and review, so reach for it when the
