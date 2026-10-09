@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import time
@@ -391,3 +392,123 @@ def test_run_cartridge_without_asserts_never_opens_a_cdp_tunnel(cfg, cartridge_p
         qa.run_cartridge(cfg, cartridge_path, run_dir=run_dir)
 
     mock_tunnel.assert_not_called()
+
+
+# ── screencast steps ─────────────────────────────────────────────────────────
+
+def _screencast_cartridge_path(tmp_path, sc_value, label="motion", appid="x.y.z"):
+    cartridge = {
+        "name": "sc-smoke",
+        "appId": appid,
+        "steps": [
+            {"key": "ENTER", "label": "open"},
+            {"screencast": sc_value, "label": label},
+        ],
+    }
+    path = tmp_path / "sc.tv-qa.yaml"
+    path.write_text(yaml.safe_dump(cartridge))
+    return str(path)
+
+
+def test_screencast_step_rejects_unknown_format(cfg, tmp_path):
+    path = _screencast_cartridge_path(tmp_path, {"format": "mkv"})
+    with pytest.raises(qa.CartridgeError, match="format"):
+        qa.run_cartridge(cfg, path)
+
+
+def test_screencast_step_rejects_bad_keys(cfg, tmp_path):
+    path = _screencast_cartridge_path(tmp_path, {"keys": {"not": "a list"}})
+    with pytest.raises(qa.CartridgeError, match="keys"):
+        qa.run_cartridge(cfg, path)
+
+
+def test_screencast_step_coexists_with_key_or_wait_is_rejected(cfg, tmp_path):
+    cartridge = {"name": "bad", "appId": "x.y.z",
+                 "steps": [{"screencast": 1, "wait": 1, "label": "bad"}]}
+    path = tmp_path / "bad.tv-qa.yaml"
+    path.write_text(yaml.safe_dump(cartridge))
+    with pytest.raises(qa.CartridgeError, match="exactly one"):
+        qa.run_cartridge(cfg, str(path))
+
+
+@pytest.mark.parametrize("sc_value,expected", [
+    (None, {"duration": 5.0, "format": "webp", "keys": None}),
+    (2, {"duration": 2.0, "format": "webp", "keys": None}),
+    ({"duration": 3, "keys": "RIGHT, DOWN", "format": "mp4"},
+     {"duration": 3.0, "format": "mp4", "keys": ["RIGHT", "DOWN"]}),
+])
+def test_screencast_config_normalizes(sc_value, expected):
+    step = {"screencast": sc_value, "label": "x"}
+    cfg = qa._screencast_config(step, "c.yaml")
+    for k, v in expected.items():
+        assert cfg[k] == v
+
+
+def _tiny_jpeg_b64():
+    import base64
+    import io
+    Image = pytest.importorskip("PIL.Image")
+    buf = io.BytesIO()
+    Image.new("RGB", (16, 12), (20, 40, 60)).save(buf, "JPEG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def _screencast_handler_factory(n_frames=3):
+    jpeg = _tiny_jpeg_b64()
+
+    async def handler(ws):
+        async for raw in ws:
+            msg = json.loads(raw)
+            mid = msg.get("id")
+            method = msg["method"]
+            if method == "Page.startScreencast":
+                await ws.send(json.dumps({"id": mid, "result": {}}))
+                for i in range(n_frames):
+                    await ws.send(json.dumps({
+                        "method": "Page.screencastFrame",
+                        "params": {"data": jpeg, "sessionId": 1,
+                                   "metadata": {"timestamp": 1000.0 + i * 0.1}},
+                    }))
+            else:  # Runtime.enable, Page.enable, acks, stopScreencast
+                await ws.send(json.dumps({"id": mid, "result": {}}))
+
+    return handler
+
+
+def test_screencast_step_produces_clip_frames_and_timing_manifest(cfg, tmp_path):
+    pytest.importorskip("PIL.Image")  # webp encode path
+    path = _screencast_cartridge_path(tmp_path, {"duration": 0.3})
+    result = _run_assert_cartridge(cfg, path, _screencast_handler_factory(n_frames=3))
+
+    # step 1 is a key step → PNG; step 2 is the screencast → clip
+    assert len(result) == 2
+    assert os.path.basename(result[0]) == "01-open.png"
+    clip = result[1]
+    assert os.path.basename(clip) == "02-motion.webp"
+    assert os.path.exists(clip)
+
+    frames_dir = os.path.join(os.path.dirname(clip), "02-motion.frames")
+    assert os.path.isdir(frames_dir)
+    assert len(glob.glob(os.path.join(frames_dir, "*.jpg"))) == 3
+    manifest = json.loads(open(os.path.join(frames_dir, "frames.json")).read())
+    assert manifest["count"] == 3
+    assert manifest["span_ms"] == 200  # 0.1s gaps across 3 frames
+
+
+def test_screencast_step_with_no_frames_raises(cfg, tmp_path):
+    path = _screencast_cartridge_path(tmp_path, {"duration": 0.2})
+    with pytest.raises(qa.CartridgeError, match="no frames"):
+        _run_assert_cartridge(cfg, path, _screencast_handler_factory(n_frames=0))
+
+
+def test_screencast_step_routes_to_cdp(cfg, tmp_path):
+    # a screencast-only cartridge (no asserts) still needs the CDP tunnel
+    path = _screencast_cartridge_path(tmp_path, {"duration": 0.2})
+    with patch("tv_ctl.qa.commands.close"), \
+         patch("tv_ctl.qa.commands.launch"), \
+         patch("tv_ctl.qa.commands.send_key"), \
+         patch("tv_ctl.qa.commands.screenshot", side_effect=lambda cfg, path: path), \
+         patch("tv_ctl.qa.devtools_tunnel") as mock_tunnel:
+        mock_tunnel.side_effect = AssertionError("tunnel opened")  # we only assert it's attempted
+        with pytest.raises(AssertionError, match="tunnel opened"):
+            qa.run_cartridge(cfg, path)

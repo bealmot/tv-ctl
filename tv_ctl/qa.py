@@ -7,7 +7,7 @@ from datetime import datetime
 import websockets
 import yaml
 
-from . import commands
+from . import commands, screencast, video
 from .cdp import devtools_tunnel, get_page_target, _target_ws_url
 from .config import Config
 from .fuzz import HEALTH_JS
@@ -25,7 +25,51 @@ class CartridgeAssertionError(CartridgeError):
     off in a folder of PNGs."""
 
 
-_STEP_KINDS = ("key", "wait", "assert")
+_STEP_KINDS = ("key", "wait", "assert", "screencast")
+_SCREENCAST_FORMATS = ("webp", "mp4", "webm")
+
+
+def _screencast_config(step: dict, cartridge_path: str) -> dict:
+    """Normalize and validate a `screencast` step's value. Accepts a mapping of
+    capture options, a bare number (seconds of `duration`), or null (defaults)."""
+    raw = step["screencast"]
+    if raw is None:
+        raw = {}
+    elif isinstance(raw, bool):  # YAML `true`/`false` — not a duration
+        raise CartridgeError(f"{cartridge_path} step '{step['label']}': 'screencast' must be a number or a mapping")
+    elif isinstance(raw, (int, float)):
+        raw = {"duration": raw}
+    if not isinstance(raw, dict):
+        raise CartridgeError(
+            f"{cartridge_path} step '{step['label']}': 'screencast' must be a number (seconds) or a mapping, "
+            f"got {type(raw).__name__}"
+        )
+
+    fmt = raw.get("format", "webp")
+    if fmt not in _SCREENCAST_FORMATS:
+        raise CartridgeError(
+            f"{cartridge_path} step '{step['label']}': screencast format {fmt!r} not one of {_SCREENCAST_FORMATS}"
+        )
+
+    keys = raw.get("keys")
+    if isinstance(keys, str):
+        keys = [k.strip() for k in keys.split(",") if k.strip()]
+    elif keys is not None and not (isinstance(keys, list) and all(isinstance(k, str) for k in keys)):
+        raise CartridgeError(
+            f"{cartridge_path} step '{step['label']}': screencast 'keys' must be a list of key names or a "
+            f"comma-separated string"
+        )
+
+    return {
+        "duration": float(raw.get("duration", 5.0)),
+        "keys": keys,
+        "format": fmt,
+        "fps": int(raw.get("fps", 30)),
+        "quality": int(raw.get("quality", 80)),
+        "max_width": raw.get("max_width"),
+        "key_delay": float(raw.get("key_delay", 0.5)),
+        "key_interval": float(raw.get("key_interval", 0.6)),
+    }
 
 
 def _load_cartridge(cartridge_path: str) -> dict:
@@ -51,8 +95,10 @@ def _load_cartridge(cartridge_path: str) -> dict:
         if len(present) != 1:
             raise CartridgeError(
                 f"cartridge {cartridge_path} step {i} ('{step['label']}') must have exactly one of "
-                f"'key', 'wait', or 'assert', found {present or 'none'}"
+                f"'key', 'wait', 'assert', or 'screencast', found {present or 'none'}"
             )
+        if "screencast" in step:
+            _screencast_config(step, cartridge_path)  # validate now, before launching anything
 
     return cartridge
 
@@ -98,19 +144,27 @@ async def _run_cartridge_with_cdp(cfg: Config, cartridge: dict, cartridge_path: 
             pending: dict[int, dict] = {}
             notifications: list[dict] = []
 
-            async def call(method, params=None, timeout=5.0):
+            async def send_only(method, params=None):
                 nonlocal next_id
                 msg_id = next_id
                 next_id += 1
                 await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
+                return msg_id
+
+            def route(msg):
+                # Shared sink for messages a screencast capture reads off the
+                # wire but doesn't own: command replies and console errors still
+                # land where `call`/assert checks expect them.
+                if "id" in msg:
+                    pending[msg["id"]] = msg
+                else:
+                    notifications.append(msg)
+
+            async def call(method, params=None, timeout=5.0):
+                msg_id = await send_only(method, params)
                 async with asyncio.timeout(timeout):
                     while msg_id not in pending:
-                        raw = await ws.recv()
-                        msg = json.loads(raw)
-                        if "id" in msg:
-                            pending[msg["id"]] = msg
-                        else:
-                            notifications.append(msg)
+                        route(json.loads(await ws.recv()))
                 return pending.pop(msg_id)
 
             await call("Runtime.enable")
@@ -135,12 +189,45 @@ async def _run_cartridge_with_cdp(cfg: Config, cartridge: dict, cartridge_path: 
                         or (n.get("method") == "Runtime.consoleAPICalled" and n.get("params", {}).get("type") == "error")
                     ]
                     _check_assertion(health, step["assert"], step["label"], cartridge_path, console_errors)
+                elif "screencast" in step:
+                    screenshot_paths.append(
+                        await _capture_screencast_step(cfg, ws, send_only, route, step, i, cartridge_path, run_dir)
+                    )
+                    continue  # the clip (plus its frames dir) IS this step's capture — no trailing screenshot
 
                 filename = f"{i:02d}-{step['label']}.png"
                 local_path = os.path.join(run_dir, filename)
                 screenshot_paths.append(commands.screenshot(cfg, local_path))
 
             return screenshot_paths
+
+
+async def _capture_screencast_step(cfg, ws, send_only, route, step, i, cartridge_path, run_dir) -> str:
+    """Record a motion clip inline during the run, over the run's own CDP
+    socket. Writes `NN-label.frames/` (JPEGs + a frames.json stopwatch manifest)
+    and encodes `NN-label.<fmt>` next to it. Returns the clip path."""
+    sc = _screencast_config(step, cartridge_path)
+    base = f"{i:02d}-{step['label']}"
+    frames_dir = os.path.join(run_dir, base + ".frames")
+    out_path = os.path.join(run_dir, f"{base}.{sc['format']}")
+
+    frames = await screencast.capture_on_ws(
+        cfg, ws, send_only, frames_dir, sc["duration"],
+        keys=sc["keys"], key_delay=sc["key_delay"], key_interval=sc["key_interval"],
+        quality=sc["quality"], max_width=sc["max_width"], on_other=route,
+    )
+    if not frames:
+        raise CartridgeError(
+            f"{cartridge_path} step '{step['label']}': screencast captured no frames — "
+            f"is the app's page actually on screen?"
+        )
+    try:
+        video.encode_timed(frames, out_path, fps=sc["fps"])
+    except video.VideoError as e:
+        raise CartridgeError(
+            f"{cartridge_path} step '{step['label']}': {e} (raw frames kept in {frames_dir})"
+        )
+    return out_path
 
 
 def run_cartridge(cfg: Config, cartridge_path: str, run_dir: str | None = None) -> list[str]:
@@ -158,8 +245,8 @@ def run_cartridge(cfg: Config, cartridge_path: str, run_dir: str | None = None) 
             raise
     commands.launch(cfg, cartridge["appId"])
 
-    has_asserts = any("assert" in step for step in cartridge["steps"])
-    if has_asserts:
+    needs_cdp = any("assert" in step or "screencast" in step for step in cartridge["steps"])
+    if needs_cdp:
         return asyncio.run(_run_cartridge_with_cdp(cfg, cartridge, cartridge_path, run_dir))
 
     # No CDP connection needed at all when a cartridge is pure key/wait steps

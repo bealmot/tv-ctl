@@ -165,20 +165,9 @@ async def capture_screencast_async(
     every_nth: int = 1,
 ) -> list[dict]:
     """Stream `Page.screencastFrame` JPEGs off the current page for `duration`
-    seconds, writing each to `out_dir` as NNNNN.jpg. Returns
-    `[{"path", "timestamp"}, ...]` in capture order.
-
-    This captures the *page's* compositor output at frame rate — smooth motion,
-    unlike the one-shot luna snapshots — but only the web content of the CDP
-    target, not native TV overlays. Each frame MUST be acked or the TV's Chrome
-    stops sending after a couple of frames (a hard requirement of the protocol,
-    not a nicety); we ack before writing so throughput isn't gated on disk.
-    Command replies to enable/start/ack aren't correlated — anything that isn't
-    a screencastFrame is simply ignored, the same pattern capture_network uses.
-    """
-    os.makedirs(out_dir, exist_ok=True)
-    frames: list[dict] = []
-
+    seconds over a dedicated connection. Returns `[{"path", "timestamp"}, ...]`
+    in capture order. Thin wrapper over `_screencast_loop` — see it for the
+    frame/ack mechanics."""
     async with websockets.connect(ws_url, max_size=20_000_000) as ws:
         next_id = 1
 
@@ -189,41 +178,79 @@ async def capture_screencast_async(
             await ws.send(json.dumps({"id": msg_id, "method": method, "params": params or {}}))
             return msg_id
 
-        await send("Page.enable")
-        start_params: dict = {"format": "jpeg", "quality": quality, "everyNthFrame": max(1, every_nth)}
-        if max_width:
-            start_params["maxWidth"] = max_width
-        if max_height:
-            start_params["maxHeight"] = max_height
-        await send("Page.startScreencast", start_params)
+        return await _screencast_loop(
+            ws, send, out_dir, duration,
+            quality=quality, max_width=max_width, max_height=max_height, every_nth=every_nth,
+        )
 
-        deadline = time.monotonic() + duration
-        try:
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    break
 
-                msg = json.loads(raw)
-                if msg.get("method") != "Page.screencastFrame":
-                    continue
+async def _screencast_loop(
+    ws,
+    send,
+    out_dir: str,
+    duration: float,
+    *,
+    quality: int = 80,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    every_nth: int = 1,
+    on_other=None,
+) -> list[dict]:
+    """Run `Page.startScreencast` over an ALREADY-OPEN `ws`, writing each frame
+    to `out_dir` as NNNNN.jpg and returning `[{"path", "timestamp"}, ...]`.
 
-                params = msg["params"]
-                # Ack first — the TV throttles hard if acks lag.
-                await send("Page.screencastFrameAck", {"sessionId": params.get("sessionId")})
+    `send(method, params) -> msg_id` is the caller's fire-and-forget sender.
+    This captures the *page's* compositor output at frame rate — smooth motion,
+    unlike one-shot luna snapshots — but only the web content of the CDP target,
+    not native TV overlays. Each frame MUST be acked or the TV's Chrome stops
+    sending after a couple of frames (a hard protocol requirement, not a
+    nicety); we ack before writing so throughput isn't gated on disk.
 
-                idx = len(frames) + 1
-                path = os.path.join(out_dir, f"{idx:05d}.jpg")
-                with open(path, "wb") as f:
-                    f.write(base64.b64decode(params["data"]))
-                frames.append({"path": path, "timestamp": params.get("metadata", {}).get("timestamp")})
-        finally:
-            with contextlib.suppress(Exception):
-                await send("Page.stopScreencast")
+    A caller that shares its connection (e.g. the QA runner reusing its one
+    assert-path socket) passes `on_other`, which receives every non-frame
+    message so the caller can route command replies and console notifications
+    into its own bookkeeping. When `on_other` is None, those are simply ignored.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    frames: list[dict] = []
+
+    await send("Page.enable")
+    start_params: dict = {"format": "jpeg", "quality": quality, "everyNthFrame": max(1, every_nth)}
+    if max_width:
+        start_params["maxWidth"] = max_width
+    if max_height:
+        start_params["maxHeight"] = max_height
+    await send("Page.startScreencast", start_params)
+
+    deadline = time.monotonic() + duration
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+
+            msg = json.loads(raw)
+            if msg.get("method") != "Page.screencastFrame":
+                if on_other is not None:
+                    on_other(msg)
+                continue
+
+            params = msg["params"]
+            # Ack first — the TV throttles hard if acks lag.
+            await send("Page.screencastFrameAck", {"sessionId": params.get("sessionId")})
+
+            idx = len(frames) + 1
+            path = os.path.join(out_dir, f"{idx:05d}.jpg")
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(params["data"]))
+            frames.append({"path": path, "timestamp": params.get("metadata", {}).get("timestamp")})
+    finally:
+        with contextlib.suppress(Exception):
+            await send("Page.stopScreencast")
 
     return frames
 
