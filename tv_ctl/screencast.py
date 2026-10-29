@@ -66,6 +66,51 @@ def _drive_keys(cfg: Config, keys: list[str], delay: float, interval: float, sto
             return
 
 
+async def capture_on_ws(
+    cfg: Config,
+    ws,
+    send,
+    out_dir: str,
+    duration: float = 5.0,
+    keys: list[str] | None = None,
+    key_delay: float = 0.5,
+    key_interval: float = 0.6,
+    quality: int = 80,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    every_nth: int = 1,
+    on_other=None,
+) -> list[dict]:
+    """Capture a screencast over an ALREADY-OPEN CDP `ws` shared with the caller
+    — the QA runner reuses its one assert-path connection, since a page target
+    admits only one devtools client and a second connection would be refused.
+    Drives `keys` on a background thread during capture (same model as
+    `record`), writes the `frames.json` timing manifest, and returns the frame
+    list. `send`/`on_other` are the caller's shared sender and message router."""
+    stop = threading.Event()
+    driver: threading.Thread | None = None
+    if keys:
+        driver = threading.Thread(
+            target=_drive_keys, args=(cfg, keys, key_delay, key_interval, stop), daemon=True
+        )
+        driver.start()
+
+    try:
+        frames = await cdp._screencast_loop(
+            ws, send, out_dir, duration,
+            quality=quality, max_width=max_width, max_height=max_height,
+            every_nth=every_nth, on_other=on_other,
+        )
+    finally:
+        stop.set()
+        if driver is not None:
+            driver.join(timeout=2.0)
+
+    if frames:
+        _write_timings(out_dir, frames)
+    return frames
+
+
 def record(
     cfg: Config,
     out_dir: str,

@@ -21,16 +21,26 @@ testing, write one following this shape:
 name: <short description>
 appId: <webOS app id>
 steps:
-  - key: ENTER        # or: wait: <seconds>
+  - key: ENTER        # send a D-pad key
     label: <short-slug-for-the-screenshot-filename>
-  - wait: 1.5
+  - wait: 1.5         # pause N seconds
     label: settle
+  - assert:           # health-probe the page; a mismatch fails the run
+      focused_count: 1
+      focused_text_contains: "Blade Runner"
+    label: focus-landed
+  - screencast:       # capture a motion clip inline (see below)
+      duration: 4
+      keys: [RIGHT, RIGHT, DOWN]
+    label: browse-carousel
   - key: DOWN
     label: scroll-to-second-item
 ```
 
-Every step needs a `label` (used in the screenshot filename) and exactly one
-of `key` or `wait`.
+Every step needs a `label` and exactly one of `key`, `wait`, `assert`, or
+`screencast`. `key`/`wait`/`assert` steps screenshot the settled screen after
+running (`NN-label.png`); a `screencast` step instead produces a motion clip
+(see below) as its artifact.
 
 ## Running a cartridge
 
@@ -82,15 +92,26 @@ structurally can't:
 - **Did the motion look right?** Smooth vs janky vs skipped; focus that glides
   vs teleports.
 
-```
-tv-ctl launch <appId>
-tv-ctl screencast qa/runs/<ts>/nav.mp4 --keys RIGHT,RIGHT,DOWN,ENTER --keep-frames qa/runs/<ts>/cast
+The simplest way is a `screencast` **step in the cartridge itself**, captured
+inline at the point in the sequence where the motion happens:
+
+```yaml
+  - screencast:
+      duration: 4
+      keys: [RIGHT, RIGHT, DOWN, ENTER]   # D-pad fired during capture; omit to record a passive load/animation
+      # format: webp (default; needs Pillow) | mp4 | webm (need ffmpeg)
+      # fps / quality / max_width / key_delay / key_interval also accepted
+    label: browse-carousel
 ```
 
-`--keep-frames` drops every captured frame into `cast/` plus a `frames.json`
-with each frame's `elapsed_ms`. Review the frames the way you review cartridge
-PNGs (the encoded clip is for a human — vision reads one frame of it); use
-`frames.json` as the stopwatch — `elapsed_ms` at the frame where content lands
-minus at the frame where you triggered it is the measured latency. See the
-`tv-control` skill's "Producing evidence" section for the full picture.
-Gitignore the run dir as usual.
+The step records over the run's own CDP connection (no second tool invocation)
+and writes two things into the run dir: the encoded clip `NN-label.<fmt>` and a
+`NN-label.frames/` directory holding every JPEG frame plus a `frames.json`
+timing manifest. Review the **frames** the way you review cartridge PNGs — the
+encoded clip is for a human, since vision reads only one frame of it — and use
+`frames.json` as the stopwatch: `elapsed_ms` at the frame where content lands,
+minus at the frame where you triggered it, is the measured latency.
+
+For an ad-hoc capture outside a cartridge, the standalone `tv-ctl screencast`
+command does the same thing (see the `tv-control` skill's "Producing evidence"
+section). Gitignore the run dir as usual.
